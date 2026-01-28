@@ -298,7 +298,18 @@ handler = ApprovalHandler()
 @app.route("/slack/events", methods=["POST"])
 def slack_events():
     """Handle Slack events (messages and interactions)"""
-    data = request.json
+    
+    # Slack sends interactive payloads as form data, not JSON
+    if request.content_type and 'application/json' in request.content_type:
+        data = request.json
+    else:
+        # Interactive components come as form-encoded payload
+        import json as json_module
+        payload_str = request.form.get('payload')
+        if payload_str:
+            data = json_module.loads(payload_str)
+        else:
+            data = request.json
     
     # Handle URL verification challenge
     if data.get("type") == "url_verification":
