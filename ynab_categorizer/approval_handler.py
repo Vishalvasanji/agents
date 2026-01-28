@@ -229,6 +229,18 @@ class ApprovalHandler:
             return message
         else:
             return f"❌ Failed to update {txn['payee_name']}"
+    
+    def approve_all_from_button(self, thread_ts: str, channel: str) -> str:
+        """Handle approve all button click"""
+        return self.approve_all(self.find_pending_transactions(thread_ts), thread_ts, channel)
+    
+    def approve_specific_from_button(self, thread_ts: str, numbers: List[str], channel: str) -> str:
+        """Handle individual approve button click"""
+        return self.approve_specific(self.find_pending_transactions(thread_ts), numbers, thread_ts, channel)
+    
+    def change_category_from_button(self, thread_ts: str, txn_num: int, new_category: str, channel: str) -> str:
+        """Handle category dropdown selection"""
+        return self.change_category(self.find_pending_transactions(thread_ts), txn_num, new_category, thread_ts, channel)
 
 
 handler = ApprovalHandler()
@@ -236,14 +248,111 @@ handler = ApprovalHandler()
 
 @app.route("/slack/events", methods=["POST"])
 def slack_events():
-    """Handle Slack events (messages)"""
+    """Handle Slack events (messages and interactions)"""
     data = request.json
     
     # Handle URL verification challenge
     if data.get("type") == "url_verification":
         return jsonify({"challenge": data["challenge"]})
     
-    # Handle app mentions and messages
+    # Handle interactive button/dropdown clicks
+    if data.get("type") == "block_actions":
+        payload = data
+        user_id = payload["user"]["id"]
+        actions = payload["actions"]
+        message_ts = payload["message"]["ts"]
+        channel = payload["channel"]["id"]
+        
+        for action in actions:
+            action_id = action["action_id"]
+            
+            # Handle "Approve All" button
+            if action_id == "approve_all_transactions":
+                response = handler.approve_all_from_button(message_ts, channel)
+                
+                # Update the message
+                requests.post(
+                    "https://slack.com/api/chat.update",
+                    headers={
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "channel": channel,
+                        "ts": message_ts,
+                        "text": response,
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {"type": "mrkdwn", "text": response}
+                            }
+                        ]
+                    }
+                )
+                
+            # Handle individual "Approve" button
+            elif action_id.startswith("approve_transaction_"):
+                txn_num = int(action_id.split("_")[-1])
+                response = handler.approve_specific_from_button(message_ts, [str(txn_num)], channel)
+                
+                # Send as thread reply
+                requests.post(
+                    "https://slack.com/api/chat.postMessage",
+                    headers={
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "channel": channel,
+                        "thread_ts": message_ts,
+                        "text": response
+                    }
+                )
+                
+            # Handle category dropdown change
+            elif action_id.startswith("change_category_"):
+                txn_num = int(action_id.split("_")[-1])
+                new_category = action["selected_option"]["value"]
+                response = handler.change_category_from_button(message_ts, txn_num, new_category, channel)
+                
+                # Send as thread reply
+                requests.post(
+                    "https://slack.com/api/chat.postMessage",
+                    headers={
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "channel": channel,
+                        "thread_ts": message_ts,
+                        "text": response
+                    }
+                )
+            
+            # Handle "Skip" button
+            elif action_id == "skip_transactions":
+                requests.post(
+                    "https://slack.com/api/chat.update",
+                    headers={
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "channel": channel,
+                        "ts": message_ts,
+                        "text": "👍 Skipped. I'll check again tomorrow.",
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {"type": "mrkdwn", "text": "👍 Skipped. I'll check again tomorrow."}
+                            }
+                        ]
+                    }
+                )
+        
+        return jsonify({"ok": True})
+    
+    # Handle app mentions and messages (text-based commands)
     if data.get("type") == "event_callback":
         event = data.get("event", {})
         

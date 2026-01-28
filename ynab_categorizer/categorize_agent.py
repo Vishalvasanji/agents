@@ -234,7 +234,103 @@ Be concise and accurate. Only use categories from the available list."""
         return "💳"
     
     def send_to_slack(self, message: str, transactions: List[Dict]) -> str:
-        """Send message to Slack and store transaction data"""
+        """Send message to Slack with interactive buttons and dropdowns"""
+        
+        # Get all category names for the dropdown
+        categories = self.get_budget_categories()
+        category_options = [
+            {"text": {"type": "plain_text", "text": cat}, "value": cat}
+            for cat in sorted(set(categories.values()))
+        ]
+        
+        # Build interactive blocks
+        blocks = [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": f"📋 Good morning! You have {len(transactions)} uncategorized transaction(s):",
+                    "emoji": True
+                }
+            },
+            {"type": "divider"}
+        ]
+        
+        # Add a section for each transaction with buttons
+        for i, txn in enumerate(transactions, 1):
+            amount = abs(txn["amount"]) / 1000
+            emoji = self.get_category_emoji(txn["suggested_category"])
+            confidence = txn.get("confidence", "medium")
+            confidence_emoji = "🟢" if confidence == "high" else "🟡" if confidence == "medium" else "🔴"
+            
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*{i}. {emoji} {txn['payee_name']}* - ${amount:.2f}\n→ {txn['suggested_category']} {confidence_emoji}\n_{txn['date']}_"
+                },
+                "accessory": {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "✓ Approve",
+                        "emoji": True
+                    },
+                    "value": f"approve_{i}",
+                    "action_id": f"approve_transaction_{i}",
+                    "style": "primary"
+                }
+            })
+            
+            # Add category dropdown below
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": " "
+                },
+                "accessory": {
+                    "type": "static_select",
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": "Change category",
+                        "emoji": True
+                    },
+                    "options": category_options,
+                    "action_id": f"change_category_{i}"
+                }
+            })
+            
+            blocks.append({"type": "divider"})
+        
+        # Add bulk action buttons
+        blocks.append({
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "✓ Approve All",
+                        "emoji": True
+                    },
+                    "value": "approve_all",
+                    "action_id": "approve_all_transactions",
+                    "style": "primary"
+                },
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "Skip",
+                        "emoji": True
+                    },
+                    "value": "skip",
+                    "action_id": "skip_transactions"
+                }
+            ]
+        })
+        
         response = requests.post(
             "https://slack.com/api/chat.postMessage",
             headers={
@@ -243,7 +339,8 @@ Be concise and accurate. Only use categories from the available list."""
             },
             json={
                 "channel": SLACK_CHANNEL,
-                "text": message,
+                "text": f"You have {len(transactions)} uncategorized transactions",  # Fallback text
+                "blocks": blocks,
                 "unfurl_links": False,
                 "unfurl_media": False
             }
@@ -298,8 +395,7 @@ Be concise and accurate. Only use categories from the available list."""
             
             # Send to Slack
             print("💬 Sending to Slack...")
-            message = self.format_slack_message(categorized)
-            ts = self.send_to_slack(message, categorized)
+            ts = self.send_to_slack("", categorized)  # Message built in send_to_slack now
             
             print(f"✅ Sent {len(categorized)} transactions to Slack (ts: {ts})")
             print("   Waiting for user approval...")
