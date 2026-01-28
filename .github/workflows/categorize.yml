@@ -32,5 +32,5 @@ jobs:
           SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
-          cd agents/ynab_categorizer
+          cd ynab_categorizer
           python categorize_agent.py
