@@ -79,8 +79,8 @@ class YNABAgent:
             # Skip if already approved or already processed
             if txn["approved"] or txn["id"] in self.state["processed_transactions"]:
                 continue
-            # Skip transfers and split transactions (parent)
-            if txn["transfer_account_id"] or txn.get("subtransactions"):
+            # Skip split transactions (parent) but NOT transfers
+            if txn.get("subtransactions"):
                 continue
             # Skip if deleted
             if txn["deleted"]:
@@ -89,6 +89,103 @@ class YNABAgent:
             unapproved.append(txn)
         
         return unapproved
+    
+    def detect_transfer_pairs(self, transactions):
+        """
+        Detect matching transfer pairs and separate them from regular transactions.
+        Returns: (transfer_pairs, non_transfer_transactions)
+        """
+        transfers = [txn for txn in transactions if txn.get("transfer_account_id")]
+        non_transfers = [txn for txn in transactions if not txn.get("transfer_account_id")]
+        
+        # Group transfers by amount and date to find pairs
+        transfer_pairs = []
+        processed_ids = set()
+        
+        for i, txn1 in enumerate(transfers):
+            if txn1["id"] in processed_ids:
+                continue
+                
+            amount1 = txn1["amount"]
+            date1 = txn1["date"]
+            account1 = txn1["account_id"]
+            transfer_account1 = txn1.get("transfer_account_id")
+            
+            # Look for matching transfer (opposite amount, same date, accounts match)
+            for txn2 in transfers[i+1:]:
+                if txn2["id"] in processed_ids:
+                    continue
+                
+                amount2 = txn2["amount"]
+                date2 = txn2["date"]
+                account2 = txn2["account_id"]
+                transfer_account2 = txn2.get("transfer_account_id")
+                
+                # Check if they're a matching pair
+                if (date1 == date2 and 
+                    amount1 == -amount2 and
+                    account1 == transfer_account2 and
+                    account2 == transfer_account1):
+                    
+                    transfer_pairs.append((txn1, txn2))
+                    processed_ids.add(txn1["id"])
+                    processed_ids.add(txn2["id"])
+                    break
+        
+        # Any unmatched transfers go back into non_transfers
+        unmatched_transfers = [txn for txn in transfers if txn["id"] not in processed_ids]
+        non_transfers.extend(unmatched_transfers)
+        
+        return transfer_pairs, non_transfers
+
+    
+    def detect_transfer_pairs(self, transactions: List[Dict]) -> tuple[List[tuple], List[Dict]]:
+        """
+        Detect matching transfer pairs and separate them from regular transactions.
+        Returns: (transfer_pairs, non_transfer_transactions)
+        """
+        transfers = [txn for txn in transactions if txn.get("transfer_account_id")]
+        non_transfers = [txn for txn in transactions if not txn.get("transfer_account_id")]
+        
+        # Group transfers by amount and date to find pairs
+        transfer_pairs = []
+        processed_ids = set()
+        
+        for i, txn1 in enumerate(transfers):
+            if txn1["id"] in processed_ids:
+                continue
+                
+            amount1 = txn1["amount"]
+            date1 = txn1["date"]
+            account1 = txn1["account_id"]
+            transfer_account1 = txn1.get("transfer_account_id")
+            
+            # Look for matching transfer (opposite amount, same date, accounts match)
+            for txn2 in transfers[i+1:]:
+                if txn2["id"] in processed_ids:
+                    continue
+                
+                amount2 = txn2["amount"]
+                date2 = txn2["date"]
+                account2 = txn2["account_id"]
+                transfer_account2 = txn2.get("transfer_account_id")
+                
+                # Check if they're a matching pair
+                if (date1 == date2 and 
+                    amount1 == -amount2 and
+                    account1 == transfer_account2 and
+                    account2 == transfer_account1):
+                    
+                    transfer_pairs.append((txn1, txn2))
+                    processed_ids.add(txn1["id"])
+                    processed_ids.add(txn2["id"])
+                    break
+        
+        # Any unmatched transfers go back into non_transfers
+        unmatched_transfers = [txn for txn in transfers if txn["id"] not in processed_ids]
+        non_transfers.extend(unmatched_transfers)
+        
+        return transfer_pairs, non_transfers
     
     def categorize_with_ai(self, transactions: List[Dict], categories: Dict[str, str]) -> List[Dict]:
         """Use Claude via OpenRouter to suggest categories for transactions"""
@@ -239,7 +336,7 @@ Be concise and accurate. Only use categories from the available list."""
                 return emoji
         return "💳"
     
-    def send_to_slack(self, message: str, transactions: List[Dict]) -> str:
+    def send_to_slack(self, message: str, transactions: List[Dict], transfer_pairs=None) -> str:
         """Send message to Slack with interactive buttons and dropdowns"""
         
         # Get all category names for the dropdown
@@ -249,18 +346,87 @@ Be concise and accurate. Only use categories from the available list."""
             for cat in sorted(set(categories.values()))
         ]
         
+        if transfer_pairs is None:
+            transfer_pairs = []
+        
+        total_count = len(transactions) + len(transfer_pairs) * 2
+        
         # Build interactive blocks
         blocks = [
             {
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": f"📋 Good morning! You have {len(transactions)} unapproved transaction(s):",
+                    "text": f"📋 Good morning! You have {total_count} unapproved transaction(s):",
                     "emoji": True
                 }
-            },
-            {"type": "divider"}
+            }
         ]
+        
+        # Add transfer pairs section if any exist
+        if transfer_pairs:
+            # Get account names
+            accounts_url = f"https://api.ynab.com/v1/budgets/{YNAB_BUDGET_ID}/accounts"
+            accounts_response = requests.get(accounts_url, headers=self.ynab_headers)
+            accounts_response.raise_for_status()
+            accounts = {acc["id"]: acc["name"] for acc in accounts_response.json()["data"]["accounts"]}
+            
+            blocks.append({"type": "divider"})
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*🔄 Found {len(transfer_pairs)} matching transfer pair(s):*"
+                }
+            })
+            
+            # List each transfer pair
+            transfer_list = []
+            for txn1, txn2 in transfer_pairs:
+                amount = abs(txn1["amount"]) / 1000
+                account1 = accounts.get(txn1["account_id"], "Unknown")
+                account2 = accounts.get(txn2["account_id"], "Unknown")
+                transfer_list.append(f"• ${amount:.2f} - {account1} ↔ {account2}")
+            
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "\n".join(transfer_list)
+                }
+            })
+            
+            # Add "Approve All Transfers" button
+            blocks.append({
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "✓ Approve All Transfers",
+                            "emoji": True
+                        },
+                        "value": "approve_all_transfers",
+                        "action_id": "approve_all_transfers",
+                        "style": "primary"
+                    }
+                ]
+            })
+        
+        # Regular transactions section
+        if transactions:
+            blocks.append({"type": "divider"})
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*💳 {len(transactions)} regular transaction(s) to categorize:*"
+                }
+            })
+            blocks.append({"type": "divider"})
+        else:
+            blocks.append({"type": "divider"})
         
         # Add a section for each transaction with buttons
         for i, txn in enumerate(transactions, 1):
@@ -317,7 +483,7 @@ Be concise and accurate. Only use categories from the available list."""
                     "type": "button",
                     "text": {
                         "type": "plain_text",
-                        "text": "✓ Approve All",
+                        "text": "✓ Approve All Regular",
                         "emoji": True
                     },
                     "value": "approve_all",
@@ -361,6 +527,7 @@ Be concise and accurate. Only use categories from the available list."""
         ts = result["ts"]
         self.state[f"pending_{ts}"] = {
             "transactions": transactions,
+            "transfer_pairs": transfer_pairs if transfer_pairs else [],
             "timestamp": datetime.now().isoformat()
         }
         self.save_state()
@@ -395,13 +562,21 @@ Be concise and accurate. Only use categories from the available list."""
                 # Optionally send a "all clear" message to Slack
                 return
             
-            # Categorize with AI
-            print("🧠 Categorizing with AI...")
-            categorized = self.categorize_with_ai(transactions, categories)
+            # Detect transfer pairs
+            print("🔄 Detecting transfer pairs...")
+            transfer_pairs, non_transfer_txns = self.detect_transfer_pairs(transactions)
+            print(f"   Found {len(transfer_pairs)} transfer pairs, {len(non_transfer_txns)} regular transactions")
+            
+            # Categorize non-transfer transactions with AI
+            if non_transfer_txns:
+                print("🧠 Categorizing with AI...")
+                categorized = self.categorize_with_ai(non_transfer_txns, categories)
+            else:
+                categorized = []
             
             # Send to Slack
             print("💬 Sending to Slack...")
-            ts = self.send_to_slack("", categorized)  # Message built in send_to_slack now
+            ts = self.send_to_slack("", categorized, transfer_pairs)  # Message built in send_to_slack now
             
             print(f"✅ Sent {len(categorized)} transactions to Slack (ts: {ts})")
             print("   Waiting for user approval...")

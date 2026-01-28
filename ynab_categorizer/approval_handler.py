@@ -241,6 +241,55 @@ class ApprovalHandler:
     def change_category_from_button(self, thread_ts: str, txn_num: int, new_category: str, channel: str) -> str:
         """Handle category dropdown selection"""
         return self.change_category(self.find_pending_transactions(thread_ts), txn_num, new_category, thread_ts, channel)
+    
+    def approve_all_transfers_from_button(self, thread_ts: str, channel: str) -> str:
+        """Handle approve all transfers button click"""
+        pending_key = f"pending_{thread_ts}"
+        if pending_key not in self.state:
+            return "❌ Could not find pending transactions."
+        
+        transfer_pairs = self.state[pending_key].get("transfer_pairs", [])
+        if not transfer_pairs:
+            return "❌ No transfer pairs found."
+        
+        results = []
+        approved_ids = []
+        
+        for txn1, txn2 in transfer_pairs:
+            # Approve both transactions in the pair
+            url1 = f"https://api.ynab.com/v1/budgets/{YNAB_BUDGET_ID}/transactions/{txn1['id']}"
+            url2 = f"https://api.ynab.com/v1/budgets/{YNAB_BUDGET_ID}/transactions/{txn2['id']}"
+            
+            response1 = requests.patch(
+                url1,
+                headers=self.ynab_headers,
+                json={"transaction": {"approved": True}}
+            )
+            response2 = requests.patch(
+                url2,
+                headers=self.ynab_headers,
+                json={"transaction": {"approved": True}}
+            )
+            
+            if response1.status_code == 200 and response2.status_code == 200:
+                amount = abs(txn1["amount"]) / 1000
+                results.append(f"✅ ${amount:.2f} transfer approved")
+                approved_ids.extend([txn1["id"], txn2["id"]])
+            else:
+                amount = abs(txn1["amount"]) / 1000
+                results.append(f"❌ ${amount:.2f} transfer failed")
+        
+        # Mark as processed
+        self.state["processed_transactions"].extend(approved_ids)
+        
+        # Clear transfer pairs from pending
+        self.state[pending_key]["transfer_pairs"] = []
+        self.save_state()
+        
+        success_count = sum(1 for r in results if r.startswith("✅"))
+        
+        message = f"*Approved {success_count}/{len(transfer_pairs)} transfer pair(s):*\n\n" + "\n".join(results)
+        return message
 
 
 handler = ApprovalHandler()
@@ -287,6 +336,24 @@ def slack_events():
                                 "text": {"type": "mrkdwn", "text": response}
                             }
                         ]
+                    }
+                )
+            
+            # Handle "Approve All Transfers" button
+            elif action_id == "approve_all_transfers":
+                response = handler.approve_all_transfers_from_button(message_ts, channel)
+                
+                # Send as thread reply
+                requests.post(
+                    "https://slack.com/api/chat.postMessage",
+                    headers={
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "channel": channel,
+                        "thread_ts": message_ts,
+                        "text": response
                     }
                 )
                 
