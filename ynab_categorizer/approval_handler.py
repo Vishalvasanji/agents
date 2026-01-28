@@ -66,7 +66,7 @@ class ApprovalHandler:
         return None
     
     def update_ynab_transaction(self, transaction_id: str, category_name: str) -> bool:
-        """Update a transaction's category in YNAB"""
+        """Update a transaction's category in YNAB and mark as approved"""
         category_id = self.category_name_to_id.get(category_name)
         if not category_id:
             return False
@@ -75,7 +75,7 @@ class ApprovalHandler:
         response = requests.patch(
             url,
             headers=self.ynab_headers,
-            json={"transaction": {"category_id": category_id}}
+            json={"transaction": {"category_id": category_id, "approved": True}}
         )
         return response.status_code == 200
     

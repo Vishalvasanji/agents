@@ -63,7 +63,7 @@ class YNABAgent:
         return categories
     
     def get_uncategorized_transactions(self, days_back: int = 7) -> List[Dict]:
-        """Fetch uncategorized transactions from YNAB"""
+        """Fetch unapproved transactions from YNAB"""
         since_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
         url = f"https://api.ynab.com/v1/budgets/{YNAB_BUDGET_ID}/transactions"
         params = {"since_date": since_date}
@@ -73,22 +73,22 @@ class YNABAgent:
         
         all_transactions = response.json()["data"]["transactions"]
         
-        # Filter for uncategorized transactions we haven't processed yet
-        uncategorized = []
+        # Filter for unapproved transactions (includes both uncategorized AND auto-categorized but not approved)
+        unapproved = []
         for txn in all_transactions:
-            # Skip if already categorized or already processed
-            if txn["category_id"] or txn["id"] in self.state["processed_transactions"]:
+            # Skip if already approved or already processed
+            if txn["approved"] or txn["id"] in self.state["processed_transactions"]:
                 continue
             # Skip transfers and split transactions (parent)
             if txn["transfer_account_id"] or txn.get("subtransactions"):
                 continue
-            # Skip if deleted or pending (not yet cleared)
+            # Skip if deleted
             if txn["deleted"]:
                 continue
             
-            uncategorized.append(txn)
+            unapproved.append(txn)
         
-        return uncategorized
+        return unapproved
     
     def categorize_with_ai(self, transactions: List[Dict], categories: Dict[str, str]) -> List[Dict]:
         """Use Claude via OpenRouter to suggest categories for transactions"""
@@ -105,9 +105,14 @@ class YNABAgent:
         txn_list = []
         for i, txn in enumerate(transactions, 1):
             amount = abs(txn["amount"]) / 1000  # YNAB uses milliunits
-            txn_list.append(
-                f"{i}. {txn['payee_name']} - ${amount:.2f} on {txn['date']}"
-            )
+            existing_cat = None
+            if txn.get("category_id"):
+                existing_cat = categories.get(txn["category_id"], "Unknown")
+            
+            txn_str = f"{i}. {txn['payee_name']} - ${amount:.2f} on {txn['date']}"
+            if existing_cat:
+                txn_str += f" (YNAB suggested: {existing_cat})"
+            txn_list.append(txn_str)
         
         category_list = "\n".join([f"- {name}" for name in sorted(set(categories.values()))])
         txn_list_str = "\n".join(txn_list)
@@ -120,14 +125,15 @@ Available categories:
 Previously learned patterns from user approvals:
 {learned_patterns}
 
-Uncategorized transactions:
+Unapproved transactions (some may have YNAB's auto-suggestion):
 {txn_list_str}
 
 For each transaction, suggest the most appropriate category based on:
-1. The merchant/payee name
-2. Previously learned patterns (highest priority)
-3. Common transaction categorization logic
-4. The transaction amount and date if relevant
+1. Previously learned patterns (highest priority - the user has approved these before)
+2. YNAB's existing suggestion if shown (consider it but you can override if learned patterns say otherwise)
+3. The merchant/payee name
+4. Common transaction categorization logic
+5. The transaction amount and date if relevant
 
 Respond in JSON format with an array of objects, one per transaction:
 [
@@ -249,7 +255,7 @@ Be concise and accurate. Only use categories from the available list."""
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": f"📋 Good morning! You have {len(transactions)} uncategorized transaction(s):",
+                    "text": f"📋 Good morning! You have {len(transactions)} unapproved transaction(s):",
                     "emoji": True
                 }
             },
@@ -380,9 +386,9 @@ Be concise and accurate. Only use categories from the available list."""
             print(f"   Found {len(categories)} categories")
             
             # Fetch uncategorized transactions
-            print("💳 Fetching uncategorized transactions...")
+            print("💳 Fetching unapproved transactions...")
             transactions = self.get_uncategorized_transactions()
-            print(f"   Found {len(transactions)} uncategorized transactions")
+            print(f"   Found {len(transactions)} unapproved transactions")
             
             if not transactions:
                 print("✅ No work to do!")
