@@ -110,6 +110,7 @@ class YNABAgent:
             )
         
         category_list = "\n".join([f"- {name}" for name in sorted(set(categories.values()))])
+        txn_list_str = "\n".join(txn_list)
         
         prompt = f"""You are helping categorize personal finance transactions for YNAB (You Need A Budget).
 
@@ -120,7 +121,7 @@ Previously learned patterns from user approvals:
 {learned_patterns}
 
 Uncategorized transactions:
-{"\n".join(txn_list)}
+{txn_list_str}
 
 For each transaction, suggest the most appropriate category based on:
 1. The merchant/payee name
