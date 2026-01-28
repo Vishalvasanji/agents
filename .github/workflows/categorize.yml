@@ -1,0 +1,36 @@
+name: YNAB Categorization Agent
+
+on:
+  schedule:
+    # Run at 6:00 AM Central Time (12:00 PM UTC)
+    - cron: '0 12 * * *'
+  
+  workflow_dispatch:
+
+jobs:
+  categorize:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install requests
+      
+      - name: Run categorization agent
+        env:
+          YNAB_API_TOKEN: ${{ secrets.YNAB_API_TOKEN }}
+          YNAB_BUDGET_ID: ${{ secrets.YNAB_BUDGET_ID }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          cd agents/ynab_categorizer
+          python categorize_agent.py
